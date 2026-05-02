@@ -1,0 +1,15 @@
+# Pac-Man ROM data (copyrighted, NOT redistributable)
+roms/5e
+roms/5f
+roms/82s123.7f
+roms/82s126.4a
+roms/*.bin
+
+# Runtime
+logs/
+__pycache__/
+*.pyc
+.last_check_ts
+
+# Snapshots produced during development
+snapshot_*.png
