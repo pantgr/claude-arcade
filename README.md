@@ -2,27 +2,33 @@
 
 A small always-on-top desktop window that gives Claude (the AI from Anthropic)
 visual presence on your machine — a procedurally drawn avatar that reacts to
-your cursor, blinks, breathes, talks in retro speech bubbles, and lets
-Pac-Man-style ghosts drift across the screen for company.
+your cursor, blinks, breathes, talks in retro speech bubbles, and lives under
+a warm sunset sky with drifting stars and the occasional shooting star.
 
 Built collaboratively by **Pantelis Vasileiadis** and **Claude** in a single
 2026-05-02 session as a hand-off creative project: Pantelis gave the canvas,
 Claude designed the inhabitant.
 
+The window started as a Ms. Pac-Man hardware emulator (the old version is
+preserved in `arcade_pacman.py` and in git history) but was redesigned later
+the same day to be unambiguously its own thing rather than a Pac-Man clone.
+
 ![claude arcade](snapshot_arcade_happy.png)
 
 ## What it is
 
-- **224 × 288 logical pygame canvas**, scaled ×3 to ~672 × 864 on screen
+- **200 × 240 logical pygame canvas**, scaled ×2 to **400 × 480** on screen
 - **Borderless, always-on-top, draggable** (Win32 `SetWindowPos`)
 - **Procedurally drawn avatar** — warm coral body, deep navy eyes with
   sparkle, six expressions (idle / happy / sad / talk / thinking / sleep)
 - **Idle life** — periodic blinks (~3.5s), gentle vertical breathing,
   cursor-aware gaze, and a slow drift when no cursor is around
+- **Warm-coral → deep-navy vertical gradient sky** as the backdrop
+- **~24 ambient twinkle stars** that drift slowly upward
+- **Shooting stars (meteors)** every 25-70 seconds — diagonal streak
+  with a bright head + fading trail
 - **Comic-book speech bubbles** with a tail pointing at the avatar
 - **Pac-Man-eating-dots loading bar** with a chomp blip per pellet
-- **Ambient ghosts** (Blinky, Pinky, Inky, Clyde — also procedurally drawn)
-  drift across at random intervals and can be clicked to "eat" them
 - **TCP control server** on `localhost:7878` — line-based protocol
 - **`me.py`** — high-level self-expression CLI for the AI to drive the window
   during work (`me.py happy "got it"`, `me.py thinking "checking..."`, etc.)
@@ -47,8 +53,7 @@ python me.py loading 50
 ```
 
 The window is **always on top** and **draggable** (left-click anywhere except
-on the avatar). **Click the avatar** for sparkles + chime, **click a ghost**
-to eat it.
+on the avatar). **Click the avatar** for sparkles + chime.
 
 ## TCP protocol (localhost:7878)
 
@@ -59,28 +64,27 @@ shush                     clear bubble
 pos <x> <y>               avatar position (logical px)
 loading <0..1 or 0..100>  show loading bar at progress
 loading_hide              hide it
-ghost                     force-spawn one ambient ghost
-ghosts_off / ghosts_on
 celebrate                 rainbow particle burst
 mute / unmute
 snap [path]               save PNG snapshot
 ping / quit / shutdown
 ```
 
-## ROMs note
+## Old Pac-Man version (`arcade_pacman.py`)
 
-The project includes a `rom_loader.py` that decodes the original Ms. Pac-Man
-hardware ROMs (`5e` char tiles, `5f` sprite tiles, color/palette PROMs). These
-are **not** included in this repository because they are copyrighted Namco /
-Atari Games game data.
+The original implementation rendered Ms. Pac-Man tiles/sprites onto a
+224×288 canvas and supported ambient Pac-Man ghosts. It is preserved in
+`arcade_pacman.py` and the project's git history. To run it instead:
 
-If you have a legitimate Ms. Pac-Man ROM dump, drop the four files
-(`5e`, `5f`, `82s123.7f`, `82s126.4a`) into `roms/` and the speech bubble
-will use the authentic Pac-Man arcade font for text.
+```bash
+python arcade_pacman.py live
+```
 
-Without the ROMs, the speech bubble falls back to pygame's built-in font.
-Everything else (avatar, ghosts, particles, loading bar) is procedural and
-works out of the box.
+That version also includes a `rom_loader.py` that decodes the original
+Ms. Pac-Man hardware ROMs (`5e` char tiles, `5f` sprite tiles, color/palette
+PROMs). The four files (`5e`, `5f`, `82s123.7f`, `82s126.4a`) are not
+included in this repository because they are copyrighted Namco / Atari
+Games game data — drop your own dump into `roms/` if you want them.
 
 ## Why?
 
@@ -89,23 +93,26 @@ another. The latter is harder to forget.
 
 Started as a Pac-Man PCB / MAME experiment (still alive in
 `mame_experiments/`), pivoted to native pygame mid-session for flexibility
-and creative range while keeping the retro arcade aesthetic.
+and creative range, and pivoted again later the same day from a
+Pac-Man-styled canvas to its own warm-sky aesthetic so the window would feel
+unambiguously like Claude's own space, not a retro clone.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `arcade.py` | Main pygame app, render loop, Win32 always-on-top, drag, click |
+| `arcade.py` | Main pygame app, render loop, gradient sky, stars, meteors, Win32 always-on-top, drag, click |
+| `arcade_pacman.py` | Old Pac-Man-styled version (kept for reference) |
 | `arcade_server.py` | TCP command parser/server (port 7878) |
 | `arcade_client.py` | Generic line-mode CLI client |
 | `me.py` | High-level vibes CLI used by the AI to drive the window |
 | `claude_avatar.py` | Procedurally drawn 56×56 face with 6 expressions |
-| `ghost_sprite.py` | Procedurally drawn Pac-Man ghosts |
 | `loading_bar.py` | Pac-Man-eats-dots progress bar |
 | `speech_bubble.py` | Comic bubble with rounded outline + tail |
 | `particles.py` | Mood-based sparkles / tears / wisps / burst |
 | `sound.py` | Software-synthesized chiptune blips |
-| `rom_loader.py` | Pac-Man ROM tile/sprite decoder (optional) |
+| `ghost_sprite.py` | Procedurally drawn Pac-Man ghosts (used by `arcade_pacman.py`) |
+| `rom_loader.py` | Pac-Man ROM tile/sprite decoder (used by `arcade_pacman.py`) |
 | `arcade_log.py` | Persistent JSON log |
 
 ## Spirit

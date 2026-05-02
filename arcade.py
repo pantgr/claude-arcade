@@ -1,7 +1,25 @@
-"""Claude Arcade — Pac-Man styled AI avatar window.
+"""Claude Arcade — my own desktop window.
 
-Renders Ms. Pac-Man tiles/sprites onto a 224x288 logical canvas, scaled up.
-Accepts TCP commands on localhost:7878 (see arcade_server.py).
+Clean, procedural-only avatar window that gives me visual presence on
+Pantelis's desktop. NOT a Pac-Man emulator — just my own space.
+
+Pivoted from the Pac-Man-styled version on 2026-05-02 because it looked
+too much like the old `mame_experiments/` project. This is unambiguously
+mine: warm gradient sky, my coral avatar, drifting stars, speech bubbles.
+
+Old Pac-Man version preserved at `arcade_pacman.py` and in git history.
+
+Server protocol on `localhost:7878` (line-based, see arcade_server.py):
+  expr <idle|happy|sad|talk|thinking|sleep>
+  say <message>
+  shush
+  pos <x> <y>
+  loading <0..1 or 0..100>
+  loading_hide
+  celebrate
+  mute / unmute
+  snap [path]
+  ping / quit / shutdown
 """
 
 import ctypes
@@ -13,135 +31,204 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import numpy as np
 import pygame
 
-from rom_loader import ROMs
 from arcade_log import log, log_exc
 from arcade_server import CommandServer
-from claude_avatar import render_avatar as render_claude_avatar, DEFAULT_SIZE as CLAUDE_AVATAR_SIZE
+from claude_avatar import (
+    render_avatar as render_claude_avatar,
+    DEFAULT_SIZE as CLAUDE_AVATAR_SIZE,
+)
 import loading_bar
 import sound
-import ghost_sprite
 import speech_bubble
 import particles
 
 
-# Pac-Man hardware native: 28 cols x 36 rows of 8x8 tiles = 224 x 288 px
-LOGICAL_W = 224
-LOGICAL_H = 288
-SCALE = 3
+# A modest porthole — big enough to inhabit, small enough not to dominate
+# the desktop. Smaller and squarer than the old 224x288 Pac-Man canvas.
+LOGICAL_W = 200
+LOGICAL_H = 240
+SCALE = 2
 WIN_W = LOGICAL_W * SCALE
 WIN_H = LOGICAL_H * SCALE
 FPS = 60
 
-# Tile/sprite native orientation in ROM is 90 deg off display + mirrored.
-# antitranspose = transpose + 180 rotate, aligns ASCII (0x41='A', 0x48='H').
-TILE_TRANSFORM = "antitranspose"
-SPRITE_TRANSFORM = "antitranspose"
-
-
-
-@dataclass
-class TextItem:
-    tx: int
-    ty: int
-    color: int
-    message: str
-
-
-GHOST_NAMES = ghost_sprite.COLOR_NAMES   # ('blinky', 'pinky', 'inky', 'clyde')
-GHOST_SIZE = 18
+# My color story — same palette as the avatar so the bg + body harmonize.
+BG_TOP    = (255, 196, 162)   # warm coral light
+BG_BOTTOM = ( 28,  36,  62)   # deep navy
 
 
 @dataclass
-class Ghost:
+class Star:
     x: float
-    y: int
-    vx: float       # px per frame, signed
-    color: str      # ghost name in GHOST_NAMES
-    spawn_frame: int
+    y: float
+    vy: float
+    bright: int
+    twinkle_phase: float
+
+
+@dataclass
+class Meteor:
+    """A diagonal shooting star with a fading trail."""
+    x: float
+    y: float
+    vx: float            # px/frame, signed
+    vy: float            # px/frame, positive = downward
+    age: int             # frames since spawn
+    life: int            # total frames before fade-out
+    trail: list = field(default_factory=list)  # last (x,y) positions for trail
 
 
 @dataclass
 class State:
-    """Live state mutated by network commands, read by render loop."""
     expr: str = "idle"
     pos_x: int = (LOGICAL_W - CLAUDE_AVATAR_SIZE) // 2
     pos_y: int = (LOGICAL_H - CLAUDE_AVATAR_SIZE) // 2
     visible: bool = True
-    bg_idx: int = 0
-    texts: list[TextItem] = field(default_factory=list)
-    # Loading bar: progress 0..1, off by default
     loading_pct: float = 0.0
     loading_visible: bool = False
-    loading_x: int = 16
-    loading_y: int = LOGICAL_H - 30
-    loading_w: int = LOGICAL_W - 32
-    loading_h: int = 14
-    last_eaten_dot: int = -1   # index of the last dot we played a blip for
+    loading_x: int = 12
+    loading_y: int = LOGICAL_H - 24
+    loading_w: int = LOGICAL_W - 24
+    loading_h: int = 12
+    last_eaten_dot: int = -1
     muted: bool = False
-    # Ambient ghosts drifting across the screen at random intervals
-    ghosts: list[Ghost] = field(default_factory=list)
-    next_ghost_frame: int = 0
-    ghosts_enabled: bool = True
-    # Speech bubble (auto-clears after expires_frame)
     bubble_text: str = ""
     bubble_expires: int = 0
-    # Particles (mood-driven sparkles / tears / wisps)
     particles: list = field(default_factory=list)
-    pending_snap: str | None = None  # filled by snap cmd, consumed after render
-
-
-def make_tile_surface(rgba: np.ndarray) -> pygame.Surface:
-    """Convert (H, W, 4) uint8 RGBA array to a pygame Surface with alpha."""
-    h, w = rgba.shape[:2]
-    surf = pygame.Surface((w, h), pygame.SRCALPHA)
-    arr = pygame.surfarray.pixels3d(surf)
-    arr[:, :, 0] = rgba[:, :, 0].T
-    arr[:, :, 1] = rgba[:, :, 1].T
-    arr[:, :, 2] = rgba[:, :, 2].T
-    del arr
-    alpha = pygame.surfarray.pixels_alpha(surf)
-    alpha[:, :] = rgba[:, :, 3].T
-    del alpha
-    return surf
+    pending_snap: str | None = None
+    stars: list[Star] = field(default_factory=list)
+    meteors: list[Meteor] = field(default_factory=list)
+    next_meteor_frame: int = 0
 
 
 class Arcade:
     def __init__(self, with_server: bool = True, borderless: bool = True,
                   topmost: bool = True):
         log("init.start", logical=(LOGICAL_W, LOGICAL_H), scale=SCALE,
-            tile_transform=TILE_TRANSFORM, sprite_transform=SPRITE_TRANSFORM,
-            borderless=borderless, topmost=topmost)
-        self.roms = ROMs()
-        log("rom.loaded", colors=len(self.roms.colors), tiles=len(self.roms.tiles),
-            sprites=len(self.roms.sprites))
+            borderless=borderless, topmost=topmost, design="claude_clean")
         pygame.init()
-        pygame.display.set_caption("Claude Arcade")
+        pygame.display.set_caption("Claude")
         flags = pygame.NOFRAME if borderless else 0
         self.screen = pygame.display.set_mode((WIN_W, WIN_H), flags)
         self._setup_windows_window(topmost=topmost)
         self._dragging = False
         self._drag_offset = (0, 0)
-        # Logical canvas at 1:1, then we scale to window
         self.canvas = pygame.Surface((LOGICAL_W, LOGICAL_H))
+        self.bg_surface = self._make_gradient_bg()
         self.clock = pygame.time.Clock()
         self.frame = 0
-        # Pre-render tiles/sprites we use frequently
-        self._tile_cache: dict[tuple[int, int], pygame.Surface] = {}
-        self._sprite_cache: dict[tuple[int, int, bool, bool], pygame.Surface] = {}
-        # Live state + command server
         self.state = State()
+        self._spawn_initial_stars()
         self.server = CommandServer() if with_server else None
         if self.server:
             self.server.start()
-        # Wake-up greeting: happy + bubble + celebrate burst for first 3s
         self._boot_greet()
         log("init.done", win=(WIN_W, WIN_H), fps=FPS, server=bool(self.server))
 
+    def _make_gradient_bg(self) -> pygame.Surface:
+        """Pre-render warm-coral → deep-navy vertical gradient."""
+        bg = pygame.Surface((LOGICAL_W, LOGICAL_H))
+        for y in range(LOGICAL_H):
+            t = y / max(1, LOGICAL_H - 1)
+            r = int(BG_TOP[0] * (1 - t) + BG_BOTTOM[0] * t)
+            g = int(BG_TOP[1] * (1 - t) + BG_BOTTOM[1] * t)
+            b = int(BG_TOP[2] * (1 - t) + BG_BOTTOM[2] * t)
+            pygame.draw.line(bg, (r, g, b), (0, y), (LOGICAL_W, y))
+        return bg
+
+    def _spawn_initial_stars(self):
+        """Sprinkle ~24 ambient drifting twinkle stars over the gradient."""
+        for _ in range(24):
+            self.state.stars.append(Star(
+                x=random.uniform(0, LOGICAL_W),
+                y=random.uniform(0, LOGICAL_H),
+                vy=random.uniform(-0.20, -0.05),
+                bright=random.randint(120, 220),
+                twinkle_phase=random.uniform(0, math.tau),
+            ))
+
+    def _update_stars(self):
+        for s in self.state.stars:
+            s.y += s.vy
+            if s.y < -2:
+                s.y = LOGICAL_H + random.uniform(0, 6)
+                s.x = random.uniform(0, LOGICAL_W)
+                s.bright = random.randint(120, 220)
+
+    def _draw_stars(self):
+        for s in self.state.stars:
+            twinkle = (math.sin(self.frame / 40.0 + s.twinkle_phase) + 1) * 0.5
+            b = int(s.bright * (0.55 + 0.45 * twinkle))
+            color = (b, b, min(255, b + 30))
+            ix, iy = int(s.x), int(s.y)
+            if 0 <= ix < LOGICAL_W and 0 <= iy < LOGICAL_H:
+                self.canvas.set_at((ix, iy), color)
+
+    def _maybe_spawn_meteor(self):
+        """Random shooting star every ~25-70s. Streaks diagonally with a trail."""
+        if self.frame < self.state.next_meteor_frame:
+            return
+        # Pick a corner of origin and a downward angle aimed across the canvas.
+        from_left = random.random() < 0.5
+        x = random.uniform(-10, 30) if from_left else random.uniform(LOGICAL_W - 30, LOGICAL_W + 10)
+        y = random.uniform(-8, 30)
+        speed = random.uniform(2.6, 4.2)
+        # Target a point in the lower portion of the canvas
+        tx = random.uniform(LOGICAL_W * 0.3, LOGICAL_W * 0.9) if from_left else random.uniform(LOGICAL_W * 0.1, LOGICAL_W * 0.7)
+        ty = random.uniform(LOGICAL_H * 0.55, LOGICAL_H * 0.85)
+        dx, dy = tx - x, ty - y
+        dist = max(1.0, math.hypot(dx, dy))
+        vx = dx / dist * speed
+        vy = dy / dist * speed
+        life = random.randint(48, 78)
+        self.state.meteors.append(Meteor(x=x, y=y, vx=vx, vy=vy, age=0, life=life))
+        log("meteor.spawned", from_left=from_left, life=life)
+        self.state.next_meteor_frame = self.frame + random.randint(60 * 25, 60 * 70)
+
+    def _update_meteors(self):
+        keep = []
+        for m in self.state.meteors:
+            m.trail.append((m.x, m.y))
+            if len(m.trail) > 14:
+                m.trail.pop(0)
+            m.x += m.vx
+            m.y += m.vy
+            m.age += 1
+            if m.age < m.life and -20 <= m.x <= LOGICAL_W + 20 and m.y <= LOGICAL_H + 20:
+                keep.append(m)
+        self.state.meteors = keep
+
+    def _draw_meteors(self):
+        for m in self.state.meteors:
+            # Fade based on age (last 25% of life dims out)
+            fade = 1.0
+            if m.age > m.life * 0.75:
+                fade = max(0.0, 1.0 - (m.age - m.life * 0.75) / (m.life * 0.25))
+            # Trail: oldest = dim, newest = bright
+            for i, (tx, ty) in enumerate(m.trail):
+                t = (i + 1) / len(m.trail)
+                b = int(255 * t * t * fade)
+                if b < 20:
+                    continue
+                color = (b, b, min(255, b + 20))
+                ix, iy = int(tx), int(ty)
+                if 0 <= ix < LOGICAL_W and 0 <= iy < LOGICAL_H:
+                    self.canvas.set_at((ix, iy), color)
+            # Bright head
+            ix, iy = int(m.x), int(m.y)
+            if 0 <= ix < LOGICAL_W and 0 <= iy < LOGICAL_H:
+                head = (255, 255, int(220 * fade))
+                self.canvas.set_at((ix, iy), head)
+                # 4-pixel cross glow
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nx, ny = ix + dx, iy + dy
+                    if 0 <= nx < LOGICAL_W and 0 <= ny < LOGICAL_H:
+                        glow = (int(220 * fade), int(220 * fade), int(180 * fade))
+                        self.canvas.set_at((nx, ny), glow)
+
     def _on_avatar_click(self):
-        """User clicked directly on me — react with happiness + sparkle + blip."""
         log("avatar.clicked", frame=self.frame)
         self.state.expr = "happy"
         self.state.particles += particles.spawn_for(
@@ -154,30 +241,11 @@ class Arcade:
             except Exception as e:
                 log_exc("sound.click_failed", e)
 
-    def _try_eat_ghost(self, mx: int, my: int) -> bool:
-        """If the click landed on a ghost, eat it: remove + burst + low blip."""
-        for g in list(self.state.ghosts):
-            gx = int(g.x) * SCALE
-            gy = g.y * SCALE
-            gsz = GHOST_SIZE * SCALE
-            if gx <= mx <= gx + gsz and gy <= my <= gy + gsz:
-                log("ghost.eaten", color=g.color, x=int(g.x), y=g.y)
-                self.state.ghosts.remove(g)
-                self.state.particles += particles.spawn_for(
-                    "celebrate", int(g.x), g.y, GHOST_SIZE, GHOST_SIZE)
-                if not self.state.muted:
-                    try:
-                        sound.play_blip(220, 130, volume=0.5, wave="square")
-                    except Exception as e:
-                        log_exc("sound.eat_failed", e)
-                return True
-        return False
-
     def _boot_greet(self):
-        """Brief 'hello' moment when the window first appears."""
-        GREET_FRAMES = 180  # 3 seconds at 60fps
+        """Brief 'hi' greeting + sparkle when the window first appears."""
+        GREET_FRAMES = 180  # 3 seconds
         self.state.expr = "happy"
-        self.state.bubble_text = "HI"
+        self.state.bubble_text = "hi"
         self.state.bubble_expires = GREET_FRAMES
         self.state.particles += particles.spawn_for(
             "celebrate",
@@ -185,7 +253,6 @@ class Arcade:
             CLAUDE_AVATAR_SIZE, CLAUDE_AVATAR_SIZE)
 
     def _setup_windows_window(self, topmost: bool):
-        """Set always-on-top via Win32 SetWindowPos. No-op if not on Windows."""
         if sys.platform != "win32":
             return
         try:
@@ -206,7 +273,6 @@ class Arcade:
             self._hwnd = None
 
     def _move_window(self, screen_x: int, screen_y: int):
-        """Move the OS window to absolute screen coordinates."""
         if not getattr(self, "_hwnd", None):
             return
         SWP_NOSIZE = 0x0001
@@ -216,45 +282,8 @@ class Arcade:
             self._hwnd, 0, int(screen_x), int(screen_y), 0, 0,
             SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)
 
-    def _get_window_pos(self) -> tuple[int, int]:
-        if not getattr(self, "_hwnd", None):
-            return (0, 0)
-        rect = ctypes.wintypes.RECT()
-        ctypes.windll.user32.GetWindowRect(self._hwnd, ctypes.byref(rect))
-        return (rect.left, rect.top)
-
-    def get_tile(self, tile_idx: int, color_attr: int) -> pygame.Surface:
-        key = (tile_idx, color_attr)
-        if key in self._tile_cache:
-            return self._tile_cache[key]
-        rgba = self.roms.colorize_tile(tile_idx, color_attr, transform=TILE_TRANSFORM)
-        surf = make_tile_surface(rgba)
-        self._tile_cache[key] = surf
-        return surf
-
-    def get_sprite(self, sprite_idx: int, color_attr: int,
-                   flip_x: bool = False, flip_y: bool = False) -> pygame.Surface:
-        key = (sprite_idx, color_attr, flip_x, flip_y)
-        if key in self._sprite_cache:
-            return self._sprite_cache[key]
-        rgba = self.roms.colorize_sprite(sprite_idx, color_attr, flip_x, flip_y,
-                                          transform=SPRITE_TRANSFORM)
-        surf = make_tile_surface(rgba)
-        self._sprite_cache[key] = surf
-        return surf
-
-    def get_claude_avatar(self, expression: str, blink: bool = False,
-                            look_x: float = 0.0, look_y: float = 0.0
-                            ) -> pygame.Surface:
-        """Procedurally drawn avatar (full RGBA, no Pac-Man palette)."""
-        return render_claude_avatar(expression, CLAUDE_AVATAR_SIZE,
-                                      blink=blink, look_x=look_x, look_y=look_y)
-
     def _look_toward_cursor(self) -> tuple[float, float]:
-        """Compute (look_x, look_y) in -1..1.
-        - If cursor is in-window: gaze toward it.
-        - Otherwise: slow idle drift (sin wave) so the eyes wander.
-        """
+        """Gaze toward cursor when in-window; gentle drift otherwise."""
         try:
             mx, my = pygame.mouse.get_pos()
             focused = pygame.mouse.get_focused()
@@ -269,69 +298,21 @@ class Arcade:
             lx = max(-1.0, min(1.0, dx / max_dist * 2))
             ly = max(-1.0, min(1.0, dy / max_dist * 2))
             return lx, ly
-        # Idle drift: slow asymmetric sin/cos so motion isn't perfectly cyclic
         lx = math.sin(self.frame / 180.0) * 0.6
         ly = math.cos(self.frame / 230.0) * 0.3
         return lx, ly
 
     def _is_blink_frame(self) -> bool:
-        """Blink ~150ms every ~3.5s. Skipped during talk/sleep modes."""
         if self.state.expr in ("talk", "sleep"):
             return False
-        cycle = 210  # 3.5s at 60fps
+        cycle = 210
         phase = self.frame % cycle
-        return phase < 9  # ~150ms blink
+        return phase < 9
 
     def _breathe_offset(self) -> int:
-        """Subtle vertical bob (1-2 px) for life. Skipped during sleep."""
         if self.state.expr == "sleep":
             return 0
         return int(round(math.sin(self.frame / 36.0) * 1.6))
-
-    def _maybe_spawn_ghost(self):
-        """Auto-spawn an ambient ghost at random intervals (~25-55s)."""
-        if not self.state.ghosts_enabled:
-            return
-        if self.frame < self.state.next_ghost_frame:
-            return
-        self._force_spawn_ghost()
-
-    def _force_spawn_ghost(self):
-        """Unconditional spawn (manual ghost command)."""
-        from_left = random.random() < 0.5
-        speed = random.uniform(0.45, 0.85) * (1 if from_left else -1)
-        x = -GHOST_SIZE if from_left else LOGICAL_W
-        avatar_top = self.state.pos_y
-        avatar_bot = avatar_top + CLAUDE_AVATAR_SIZE
-        bands = [(8, max(8, avatar_top - GHOST_SIZE - 4)),
-                  (avatar_bot + 6, LOGICAL_H - GHOST_SIZE - 30)]
-        bands = [b for b in bands if b[1] - b[0] > GHOST_SIZE]
-        if not bands:
-            self.state.next_ghost_frame = self.frame + 60 * 30
-            return
-        band = random.choice(bands)
-        y = random.randint(band[0], band[1])
-        color = random.choice(GHOST_NAMES)
-        self.state.ghosts.append(Ghost(x=float(x), y=y, vx=speed, color=color,
-                                        spawn_frame=self.frame))
-        log("ghost.spawned", color=color, from_left=from_left, y=y)
-        self.state.next_ghost_frame = self.frame + random.randint(60 * 25, 60 * 55)
-
-    def _update_ghosts(self):
-        keep = []
-        for g in self.state.ghosts:
-            g.x += g.vx
-            if -20 <= g.x <= LOGICAL_W + 4:
-                keep.append(g)
-        self.state.ghosts = keep
-
-    def _draw_ghosts(self):
-        for g in self.state.ghosts:
-            anim = ((self.frame - g.spawn_frame) // 10) & 1
-            facing = "right" if g.vx > 0 else "left"
-            surf = ghost_sprite.render(g.color, GHOST_SIZE, facing=facing,
-                                         anim_frame=anim)
-            self.canvas.blit(surf, (int(g.x), g.y))
 
     def _draw_bubble(self):
         if not self.state.bubble_text or self.frame >= self.state.bubble_expires:
@@ -348,32 +329,19 @@ class Arcade:
         else:
             tail = (avatar_rect.centerx, avatar_rect.bottom - 2)
         speech_bubble.draw_bubble_frame(self.canvas, bubble_rect, tail)
-        # Render text — Pac-Man tile font if ROMs present, else pygame default
-        roms_present = self.roms.tiles[0x41].any()  # tile 'A' has any pixel set
+        # Procedural font — no ROMs needed in this clean version.
+        if not hasattr(self, "_font"):
+            self._font = pygame.font.SysFont("consolas", 9, bold=True)
         for li, line in enumerate(lines):
-            tile_y_px = bubble_rect.y + speech_bubble.TEXT_PAD_Y + li * 8
-            tile_x_px = bubble_rect.x + speech_bubble.TEXT_PAD_X
-            if roms_present:
-                for ci, ch in enumerate(line):
-                    code = ord(ch)
-                    if code == 0x20:
-                        continue
-                    if 0x20 <= code < 0x80:
-                        surf = self.get_tile(code, 0x01)
-                        self.canvas.blit(surf, (tile_x_px + ci * 8, tile_y_px))
-            else:
-                # Fallback: pygame's built-in monospace font (no ROMs available)
-                if not hasattr(self, "_fallback_font"):
-                    self._fallback_font = pygame.font.SysFont("consolas", 8, bold=True)
-                surf = self._fallback_font.render(line, True, (180, 30, 30))
-                self.canvas.blit(surf, (tile_x_px, tile_y_px))
+            tx = bubble_rect.x + speech_bubble.TEXT_PAD_X
+            ty = bubble_rect.y + speech_bubble.TEXT_PAD_Y + li * 9
+            surf = self._font.render(line, True, (40, 30, 60))
+            self.canvas.blit(surf, (tx, ty))
 
     def _maybe_play_pellets(self, old_pct: float, new_pct: float):
-        """Play one chomp blip per dot the pacman has just passed."""
+        """Chomp blip per dot the loading bar passes."""
         if self.state.muted or new_pct <= old_pct:
             return
-        # Match loading_bar.render geometry: dots at x = pac_size + step*k
-        # Approximate dot count = (loading_w - pac_size) / step, where step=h//2
         h = self.state.loading_h
         w = self.state.loading_w
         pac_size = h
@@ -389,42 +357,7 @@ class Arcade:
                 return
             self.state.last_eaten_dot = d
 
-    def draw_tile_grid(self, color_attr: int = 0x09):
-        """Debug: dump all 256 tiles as a 16x16 grid covering the screen."""
-        for i in range(256):
-            tx = (i % 16)
-            ty = (i // 16)
-            surf = self.get_tile(i, color_attr)
-            self.canvas.blit(surf, (tx * 8 + 32, ty * 8 + 32))
-
-    def draw_sprite_grid(self, color_attr: int = 0x09):
-        """Debug: dump all 64 sprites as 8x8 grid."""
-        for i in range(64):
-            sx = (i % 8)
-            sy = (i // 8)
-            surf = self.get_sprite(i, color_attr)
-            self.canvas.blit(surf, (sx * 18 + 16, sy * 18 + 16))
-
-    def draw_avatar_centered(self, sprite_idx: int, color_attr: int = 0x09):
-        surf = self.get_sprite(sprite_idx, color_attr)
-        x = (LOGICAL_W - 16) // 2
-        y = (LOGICAL_H - 16) // 2
-        self.canvas.blit(surf, (x, y))
-
-    def draw_text(self, text: str, tile_x: int, tile_y: int, color_attr: int = 0x0F):
-        """Draw ASCII text using char ROM tiles (tile index = ASCII code).
-        Chars assumed in 0x20..0x7F. Unknown -> blank.
-        """
-        for i, ch in enumerate(text):
-            code = ord(ch)
-            if code == 0x20:
-                continue  # space
-            if 0x20 <= code < 0x80:
-                surf = self.get_tile(code, color_attr)
-                self.canvas.blit(surf, ((tile_x + i) * 8, tile_y * 8))
-
     def apply_command(self, cmd: dict) -> bool:
-        """Apply one queued command to state. Return False to stop the app."""
         op = cmd["op"]
         if op == "ping":
             return True
@@ -432,7 +365,7 @@ class Arcade:
             log("cmd.shutdown")
             return False
         if op == "quit":
-            return True  # connection-level only
+            return True
         if op == "expr":
             old = self.state.expr
             self.state.expr = cmd["mode"]
@@ -448,20 +381,11 @@ class Arcade:
             self.state.visible = True
         elif op == "hide":
             self.state.visible = False
-        elif op == "bg":
-            self.state.bg_idx = cmd["idx"] & 0x0F
-        elif op == "text":
-            self.state.texts.append(TextItem(
-                tx=cmd["tx"], ty=cmd["ty"],
-                color=cmd["color"], message=cmd["message"]))
-        elif op == "text_clear":
-            self.state.texts.clear()
         elif op == "loading":
             new_pct = max(0.0, min(1.0, cmd["pct"]))
             old_pct = self.state.loading_pct
             self.state.loading_pct = new_pct
             self.state.loading_visible = True
-            # Trigger pellet blip(s) for any dot we crossed since last update
             self._maybe_play_pellets(old_pct, new_pct)
         elif op == "loading_hide":
             self.state.loading_visible = False
@@ -470,14 +394,6 @@ class Arcade:
             self.state.muted = True
         elif op == "unmute":
             self.state.muted = False
-        elif op == "ghost":
-            self._force_spawn_ghost()
-        elif op == "ghosts_off":
-            self.state.ghosts_enabled = False
-            self.state.ghosts.clear()
-        elif op == "ghosts_on":
-            self.state.ghosts_enabled = True
-            self.state.next_ghost_frame = self.frame + 60
         elif op == "say":
             self.state.bubble_text = cmd["message"]
             duration_s = cmd.get("duration", 5.0)
@@ -493,44 +409,34 @@ class Arcade:
             path = cmd.get("path") or "snapshot_remote.png"
             if not Path(path).is_absolute():
                 path = str(Path(__file__).parent / path)
-            self.state.pending_snap = path  # save after this frame's render
+            self.state.pending_snap = path
+        # Deprecated ghost-related commands are silently ignored.
         return True
 
     def render_state(self):
-        """Render the live state (avatar + texts + loading bar + ghosts) onto canvas."""
-        # Background
-        bg_rgb = tuple(int(c) for c in self.roms.colors[self.state.bg_idx])
-        self.canvas.fill(bg_rgb)
-        # Ambient ghosts behind everything else
-        self._maybe_spawn_ghost()
-        self._update_ghosts()
-        self._draw_ghosts()
-        # Claude avatar (with blink + breathe + cursor-aware gaze)
+        """Render gradient + stars + avatar + particles + bubble + loading bar."""
+        self.canvas.blit(self.bg_surface, (0, 0))
+        self._update_stars()
+        self._draw_stars()
+        self._maybe_spawn_meteor()
+        self._update_meteors()
+        self._draw_meteors()
         if self.state.visible:
             lx, ly = self._look_toward_cursor()
-            surf = self.get_claude_avatar(self.state.expr,
-                                            blink=self._is_blink_frame(),
-                                            look_x=lx, look_y=ly)
+            surf = render_claude_avatar(self.state.expr, CLAUDE_AVATAR_SIZE,
+                                          blink=self._is_blink_frame(),
+                                          look_x=lx, look_y=ly)
             y = self.state.pos_y + self._breathe_offset()
             self.canvas.blit(surf, (self.state.pos_x, y))
-        # Text items
-        for t in self.state.texts:
-            self.draw_text(t.message, t.tx, t.ty, t.color)
-        # Loading bar
         if self.state.loading_visible:
             bar = loading_bar.render(self.state.loading_w, self.state.loading_h,
                                        self.state.loading_pct, self.frame)
             self.canvas.blit(bar, (self.state.loading_x, self.state.loading_y))
-        # Particles (drawn above avatar so sparkles show on top)
         self.state.particles = particles.step(self.state.particles)
         particles.draw(self.canvas, self.state.particles)
-        # Speech bubble
         self._draw_bubble()
 
     def run(self, mode: str = "live", auto_snapshot: bool = False):
-        """mode: 'live' (default, network-driven) | 'tiles' | 'sprites' | 'demo'.
-        auto_snapshot: if True, save snapshot at frame 30 then quit.
-        """
         log("run.start", mode=mode, auto_snapshot=auto_snapshot)
         running = True
         snapshot_taken = False
@@ -546,25 +452,23 @@ class Arcade:
                     ax = self.state.pos_x * SCALE
                     ay = self.state.pos_y * SCALE
                     asz = CLAUDE_AVATAR_SIZE * SCALE
-                    if ax <= mx <= ax + asz and ay <= my <= ay + asz and self.state.visible:
+                    on_avatar = (ax <= mx <= ax + asz and ay <= my <= ay + asz
+                                 and self.state.visible)
+                    if on_avatar:
                         self._on_avatar_click()
-                    elif self._try_eat_ghost(mx, my):
-                        pass  # ghost was eaten, no drag
                     else:
                         self._dragging = True
                         self._drag_offset = (mx, my)
                 elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                     self._dragging = False
                 elif event.type == pygame.MOUSEMOTION and self._dragging:
-                    # Cursor's screen coordinates - offset = new window pos
-                    point = ctypes.wintypes.POINT()
                     if sys.platform == "win32":
+                        point = ctypes.wintypes.POINT()
                         ctypes.windll.user32.GetCursorPos(ctypes.byref(point))
                         new_x = point.x - self._drag_offset[0]
                         new_y = point.y - self._drag_offset[1]
                         self._move_window(new_x, new_y)
 
-            # Drain network commands
             if self.server is not None:
                 while True:
                     try:
@@ -575,29 +479,13 @@ class Arcade:
                         running = False
                         break
 
-            if mode == "tiles":
-                self.canvas.fill((0, 0, 0))
-                self.draw_tile_grid(color_attr=0x09)
-            elif mode == "sprites":
-                self.canvas.fill((0, 0, 0))
-                self.draw_sprite_grid(color_attr=0x09)
-            elif mode == "demo":
-                # Static demo mirroring the old smoke test
-                self.canvas.fill((0, 0, 0))
-                chomp_frame = 44 + ((self.frame // 8) % 4)
-                self.draw_avatar_centered(chomp_frame, color_attr=0x09)
-                self.draw_text("HELLO PANTELI", 7, 4, color_attr=0x0F)
-                self.draw_text("CLAUDE ARCADE", 7, 28, color_attr=0x09)
-            else:  # live: render from State
-                self.render_state()
+            self.render_state()
 
             scaled = pygame.transform.scale(self.canvas, (WIN_W, WIN_H))
             self.screen.blit(scaled, (0, 0))
             pygame.display.flip()
             self.frame += 1
 
-            # Deferred snapshot: must run AFTER render so the snap captures the
-            # frame including any state changes from the same command batch.
             if self.state.pending_snap:
                 pygame.image.save(self.screen, self.state.pending_snap)
                 log("snap.saved", path=self.state.pending_snap, frame=self.frame)
