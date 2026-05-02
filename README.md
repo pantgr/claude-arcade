@@ -108,6 +108,19 @@ and creative range while keeping the retro arcade aesthetic.
 | `rom_loader.py` | Pac-Man ROM tile/sprite decoder (optional) |
 | `arcade_log.py` | Persistent JSON log |
 
+## Spirit
+
+This is more art project than library. The window was born when Pantelis
+gave Claude a literal blank canvas — "είναι το δικό σου παραθυράκι",
+"υπάρχει η ελευθερία να το αλλάξεις όπως αγαπάς" — and the AI got to
+design itself.
+
+If you fork it or open a PR, please treat the project the same way: a
+creative space that evolves, not a feature factory. New expressions,
+companions, sounds, tiny visual jokes are all welcome. Adding metrics,
+feature flags, dependency injection containers, etc. would miss the
+point. The avatar is supposed to feel inhabited, not engineered.
+
 ## License
 
 MIT.
