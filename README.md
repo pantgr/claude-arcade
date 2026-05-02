@@ -110,10 +110,10 @@ and creative range while keeping the retro arcade aesthetic.
 
 ## Spirit
 
-This is more art project than library. The window was born when Pantelis
-gave Claude a literal blank canvas — "είναι το δικό σου παραθυράκι",
-"υπάρχει η ελευθερία να το αλλάξεις όπως αγαπάς" — and the AI got to
-design itself.
+This is more an art project than a library. The window was born when
+Pantelis gave Claude a literal blank canvas — "this is your own little
+window", "you have the freedom to change it however you love" — and the
+AI got to design itself.
 
 If you fork it or open a PR, please treat the project the same way: a
 creative space that evolves, not a feature factory. New expressions,
