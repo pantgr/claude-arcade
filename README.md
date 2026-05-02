@@ -34,7 +34,7 @@ Claude designed the inhabitant.
 
 ```bash
 # Install deps
-pip install pygame numpy
+pip install -r requirements.txt
 
 # Launch the window
 python arcade.py live
