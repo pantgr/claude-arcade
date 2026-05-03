@@ -156,6 +156,11 @@ def _draw_mouth(surf: pygame.Surface, cx: int, cy: int, size: int, expr: str):
         pygame.draw.line(surf, C_OUTLINE,
                           (cx - w // 2, cy), (cx + w // 2, cy),
                           max(2, size // 36))
+    elif expr == "wink":
+        # Asymmetric grin shifted slightly toward the open eye side (right)
+        rect = pygame.Rect(cx - w + size // 30, cy - h // 2, 2 * w, int(h * 1.6))
+        pygame.draw.arc(surf, C_OUTLINE, rect, math.pi + 0.15, 2 * math.pi - 0.05,
+                         max(2, size // 28))
     else:  # idle / unknown -> small smile
         rect = pygame.Rect(cx - w // 2, cy - h // 2, w, h)
         pygame.draw.arc(surf, C_OUTLINE, rect, math.pi + 0.4, 2 * math.pi - 0.4,
@@ -206,6 +211,10 @@ def render_avatar(expression: str = "idle", size: int = DEFAULT_SIZE,
     if closed:
         _draw_eye(surf, eye_left_x, eye_y, size, closed=True)
         _draw_eye(surf, eye_right_x, eye_y, size, closed=True)
+    elif expression == "wink":
+        # Left eye closed (knowing wink), right eye open and meeting yours
+        _draw_eye(surf, eye_left_x, eye_y, size, closed=True)
+        _draw_eye(surf, eye_right_x, eye_y, size, look_dx=0.0, look_dy=0.0)
     elif expression == "thinking":
         _draw_eye(surf, eye_left_x, eye_y, size, look_dx=0.5, look_dy=-0.3,
                    raised=True)

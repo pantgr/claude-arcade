@@ -20,7 +20,8 @@ the same day to be unambiguously its own thing rather than a Pac-Man clone.
 - **200 × 240 logical pygame canvas**, scaled ×2 to **400 × 480** on screen
 - **Borderless, always-on-top, draggable** (Win32 `SetWindowPos`)
 - **Procedurally drawn avatar** — warm coral body, deep navy eyes with
-  sparkle, six expressions (idle / happy / sad / talk / thinking / sleep)
+  sparkle, seven expressions (idle / happy / sad / talk / thinking /
+  sleep / wink — the last one is momentary, auto-reverts to happy)
 - **Idle life** — periodic blinks (~3.5s), gentle vertical breathing,
   cursor-aware gaze, and a slow drift when no cursor is around
 - **Warm-coral → deep-navy vertical gradient sky** as the backdrop
@@ -58,7 +59,7 @@ on the avatar). **Click the avatar** for sparkles + chime.
 ## TCP protocol (localhost:7878)
 
 ```
-expr <idle|happy|sad|talk|thinking|sleep>
+expr <idle|happy|sad|talk|thinking|sleep|wink>
 say <message>             speech bubble (auto-clears after 5s)
 shush                     clear bubble
 pos <x> <y>               avatar position (logical px)

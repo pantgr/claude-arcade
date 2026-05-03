@@ -145,6 +145,7 @@ VIBES = {
     "happy":      ("happy",    None,                None),
     "sad":        ("sad",      None,                None),
     "sleep":      ("sleep",    None,                None),
+    "wink":       ("wink",     None,                None),
     "celebrate":  ("happy",    None,                "celebrate"),
 }
 

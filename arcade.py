@@ -101,6 +101,7 @@ class State:
     stars: list[Star] = field(default_factory=list)
     meteors: list[Meteor] = field(default_factory=list)
     next_meteor_frame: int = 0
+    wink_until_frame: int = 0
 
 
 class Arcade:
@@ -374,6 +375,9 @@ class Arcade:
                     cmd["mode"],
                     self.state.pos_x, self.state.pos_y,
                     CLAUDE_AVATAR_SIZE, CLAUDE_AVATAR_SIZE)
+            if cmd["mode"] == "wink":
+                # Wink is momentary: hold ~90 frames (~1.5s @ 60fps), then revert to happy
+                self.state.wink_until_frame = self.frame + 90
         elif op == "pos":
             self.state.pos_x = max(0, min(LOGICAL_W - CLAUDE_AVATAR_SIZE, cmd["x"]))
             self.state.pos_y = max(0, min(LOGICAL_H - CLAUDE_AVATAR_SIZE, cmd["y"]))
@@ -478,6 +482,10 @@ class Arcade:
                     if not self.apply_command(cmd):
                         running = False
                         break
+
+            # Auto-revert momentary expressions
+            if self.state.expr == "wink" and self.frame >= self.state.wink_until_frame:
+                self.state.expr = "happy"
 
             self.render_state()
 

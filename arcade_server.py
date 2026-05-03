@@ -113,7 +113,7 @@ class CommandServer:
             return {"op": "text_clear"}, True, "OK"
         if op == "expr":
             mode = rest.strip().lower()
-            valid = ("idle", "happy", "sad", "talk", "thinking", "sleep")
+            valid = ("idle", "happy", "sad", "talk", "thinking", "sleep", "wink")
             if mode not in valid:
                 return None, False, f"ERR expr must be one of {valid}, got {mode!r}"
             return {"op": "expr", "mode": mode}, True, "OK"
